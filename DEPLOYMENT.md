@@ -105,9 +105,30 @@ NEXT_PUBLIC_API_BASE=https://crm.yourdomain.com/api
 Cors__Origins__0=https://crm.yourdomain.com
 ```
 
-On Windows / IIS, install the [ASP.NET Core Module](https://learn.microsoft.com/aspnet/core/host-and-deploy/aspnet-core-module?view=aspnetcore-8.0),
-then add URL Rewrite + a reverse proxy to `127.0.0.1:5072` for paths starting
-with `api`, and the IIS site binding serves the built Next.js output.
+### Windows / IIS
+
+This is the path that produces **`HTTP Error 500.30`**.
+
+1. Install the [.NET 8 ASP.NET Core Runtime Hosting Bundle](https://dotnet.microsoft.com/download/dotnet/8.0)
+   on the server. Without `AspNetCoreModuleV2` in IIS, hosting fails.
+2. `dotnet publish backend\CrmApi -c Release -o <site-folder>`
+3. The publish output already contains `web.config` — it is the IIS entry
+   point. Open it and fill in the two empty values **on the server**:
+   - `Jwt__Key`
+   - `ConnectionStrings__Default`
+   - `Cors__Origins__0`
+4. Create an empty `logs` folder in the site folder and grant the
+   **ApplicationPool identity** write access to it. `web.config` enables
+   stdout logging, and IIS silently drops the log if it cannot write.
+   - `IIS AppPool\<YourPoolName>` → Advanced Settings → Identity
+5. Recycle the application pool. IIS only reads `web.config` at process start.
+6. Create an IIS site pointing at the published folder on the site's port.
+
+Never edit that copy in a repo you push. This repository is public, so the
+template is committed with the secrets blank on purpose.
+
+**Do not enable stdout logging permanently.** It writes request paths and
+exception details to disk in clear text. Turn it off once the deploy is healthy.
 
 ---
 
@@ -123,6 +144,19 @@ Work top to bottom — each step rules out a whole layer.
 
 Read the result:
 
+- **`HTTP Error 500.30 — app failed to start`** — the process crashed before
+  serving anything, so every route including `/api/health` returns 500 and
+  there is nothing to curl yet. Almost always a missing or too-short
+  `Jwt__Key`, which the app treats as fatal on purpose. Read the real
+  message from `logs\stdout*.log` in the site folder, or from
+  **Windows Event Viewer → Windows Logs → Application** (source
+  `ASP.NET Core Hosting Diagnostic` / `IIS Express`, event `ASP.NET Core
+  Hosting Diagnostics`).
+  - `Jwt signing key is missing or too short` → set `Jwt__Key`
+  - `Cannot reach the database` → the app did start; fix the connection string
+  - `Failed to load ASP.NET Core Module` / `0x8007000d` → the Hosting Bundle
+    is not installed
+  - HTTP 500.19 → `web.config` is malformed or the module is not registered
 - **404 on `/api/health`** — the reverse proxy is not forwarding `/api`, or the
   backend is not running. Check the `location /api/` block above.
 - **`jwtKeyConfigured: false`** — impossible while the process is up; the app
