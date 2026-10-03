@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -17,12 +18,48 @@ builder.Services.AddDbContext<CrmDbContext>(opt =>
 
 /* ---------- JWT ---------- */
 var jwt = builder.Configuration.GetSection("Jwt").Get<JwtSettings>() ?? new JwtSettings();
+
+// Preferred source is the Jwt__Key environment variable (or Jwt:Key in
+// appsettings). If neither is usable, fall back to a key file next to the app
+// so a self-hosted deploy is not blocked, generating one on first run.
+//
+// The fallback is safe on its own terms: the key is random, is written outside
+// the source tree, is git-ignored, and persists across restarts so sessions
+// are not invalidated. It is NOT as good as an operator-supplied secret, so it
+// is logged loudly whenever it is the thing that saved the boot.
+var jwtKeySource = "Jwt__Key environment variable / appsettings Jwt:Key";
+var jwtKeyIsFallback = false;
+
 if (string.IsNullOrWhiteSpace(jwt.Key) || jwt.Key.Length < 32)
-    throw new InvalidOperationException(
-        "Jwt signing key is missing or too short (need >= 32 characters). " +
-        "Set it on the host as an environment variable:  Jwt__Key=\"<32+ random chars>\" " +
-        "Do NOT commit it to appsettings*.json - this repository is public. " +
-        "Generate one with:  openssl rand -base64 48");
+{
+    var keyFile = Path.Combine(AppContext.BaseDirectory, "jwt.key");
+
+    if (File.Exists(keyFile))
+    {
+        jwt.Key = File.ReadAllText(keyFile).Trim();
+        jwtKeySource = keyFile;
+        jwtKeyIsFallback = true;
+    }
+
+    if (string.IsNullOrWhiteSpace(jwt.Key) || jwt.Key.Length < 32)
+    {
+        jwt.Key = Convert.ToBase64String(RandomNumberGenerator.GetBytes(48));
+        try
+        {
+            File.WriteAllText(keyFile, jwt.Key);
+            jwtKeySource = $"generated on first start and saved to {keyFile}";
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException(
+                "No JWT signing key is configured and jwt.key could not be created in '" +
+                AppContext.BaseDirectory + "'. Either grant write access to that folder, or set the " +
+                "Jwt__Key environment variable to at least 32 characters. Underlying error: " + ex.Message,
+                ex);
+        }
+        jwtKeyIsFallback = true;
+    }
+}
 
 builder.Services.AddSingleton(jwt);
 builder.Services.AddScoped<ITokenService, TokenService>();
@@ -85,14 +122,42 @@ builder.Services.AddCors(o => o.AddPolicy(CorsPolicy, p => p
 
 var app = builder.Build();
 
+// Make it obvious when the app saved itself with a generated key instead of an
+// operator-supplied one. A second instance would generate a different key and
+// tokens would not validate across them.
+if (jwtKeyIsFallback)
+    app.Logger.LogWarning(
+        "JWT signing key came from {Source}, not from Jwt__Key. That is fine for a single " +
+        "instance, but a load-balanced deployment must set Jwt__Key so every instance shares one key. " +
+        "Back up 'jwt.key'; deleting it logs every user out.",
+        jwtKeySource);
+
 /* ---------- Give seeded users a usable password ---------- */
 using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<CrmDbContext>();
-    if (await db.Database.CanConnectAsync())
-        await PasswordSeeder.EnsureSeedPasswordsAsync(db, app.Logger);
-    else
-        app.Logger.LogError("Cannot reach the database. Check ConnectionStrings:Default.");
+
+    // Bounded so an unreachable database cannot hold the process in "starting"
+    // for the length of the SQL connect timeout. IIS serves 500.30 when the app
+    // does not come up in time, and a stalled first request looks identical to a
+    // crash. The seeder is retried on the next start once the database is back.
+    using var startupTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(
+        builder.Configuration.GetValue("Database:StartupCheckTimeoutSeconds", 5)));
+
+    try
+    {
+        if (await db.Database.CanConnectAsync(startupTimeout.Token))
+            await PasswordSeeder.EnsureSeedPasswordsAsync(db, app.Logger);
+        else
+            app.Logger.LogError("Cannot reach the database. Check ConnectionStrings:Default.");
+    }
+    catch (OperationCanceledException)
+    {
+        app.Logger.LogError(
+            "Database did not respond within {Seconds}s. Starting anyway so the API can answer " +
+            "requests; queries will fail until ConnectionStrings:Default is correct and reachable.",
+            builder.Configuration.GetValue("Database:StartupCheckTimeoutSeconds", 5));
+    }
 }
 
 /* ---------- Global error handler -> consistent { message } ---------- */
@@ -155,6 +220,10 @@ app.MapGet("/api/health", async (CrmDbContext db) =>
         database = canConnect ? "connected" : "unreachable",
         // Booting at all proves the JWT key is present and >= 32 chars.
         jwtKeyConfigured = !string.IsNullOrWhiteSpace(jwt.Key) && jwt.Key.Length >= 32,
+        // True when the key was generated into jwt.key rather than supplied via
+        // Jwt__Key. Deliberately reports a boolean, not the file path, so the
+        // unauthenticated endpoint does not disclose the server's layout.
+        jwtKeyIsGeneratedFallback = jwtKeyIsFallback,
         corsOrigins,
         environment = app.Environment.EnvironmentName,
         timeUtc = DateTime.UtcNow

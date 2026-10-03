@@ -4,6 +4,14 @@
     <TargetFramework>net8.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <!--
+      Let the app run on a newer .NET major if 8.0 is not installed on the host.
+      Without this the default policy is "Minor", so a net8.0 app fails to start
+      on a machine that only has .NET 10, surfacing as HTTP 500.30 on IIS.
+      "LatestMajor" is used rather than "Major" because the jump from 8 to 10
+      spans more than one major version.
+    -->
+    <RollForward>LatestMajor</RollForward>
   </PropertyGroup>
 
   <ItemGroup>

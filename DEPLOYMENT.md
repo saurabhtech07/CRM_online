@@ -22,8 +22,16 @@ Generate a signing key:
 openssl rand -base64 48
 ```
 
-The app **refuses to start** if `Jwt__Key` is missing or under 32 characters.
-This is deliberate — it fails loudly rather than booting with a guessable key.
+If `Jwt__Key` is not set, the app generates a random key on first start and
+saves it as `jwt.key` next to the published `CrmApi.dll`. It reuses that file
+on every later start, so sessions survive restarts. This keeps a single-instance
+deploy working without any configuration.
+
+Set `Jwt__Key` anyway, and always on a load-balanced deployment: each instance
+would otherwise generate its own key and a token issued by one would be
+rejected by the others. The app logs a warning when it falls back to the file.
+
+`jwt.key` is git-ignored. Back it up — deleting it logs every user out.
 
 The frontend needs one value, and it is baked in at **build** time:
 
@@ -111,6 +119,10 @@ This is the path that produces **`HTTP Error 500.30`**.
 
 1. Install the [.NET 8 ASP.NET Core Runtime Hosting Bundle](https://dotnet.microsoft.com/download/dotnet/8.0)
    on the server. Without `AspNetCoreModuleV2` in IIS, hosting fails.
+   The app also carries `<RollForward>LatestMajor</RollForward>`, so a server
+   that only has a newer .NET (10) will still run it. Without that property a
+   `net8.0` app refuses to start on a machine with no 8.0 runtime, which also
+   surfaces as `500.30`.
 2. `dotnet publish backend\CrmApi -c Release -o <site-folder>`
 3. The publish output already contains `web.config` — it is the IIS entry
    point. Open it and fill in the two empty values **on the server**:
@@ -146,16 +158,23 @@ Read the result:
 
 - **`HTTP Error 500.30 — app failed to start`** — the process crashed before
   serving anything, so every route including `/api/health` returns 500 and
-  there is nothing to curl yet. Almost always a missing or too-short
-  `Jwt__Key`, which the app treats as fatal on purpose. Read the real
+  there is nothing to curl yet. The app now self-heals the most common cause
+  (a missing `Jwt__Key`) by generating `jwt.key`, so a 500.30 today points at
+  the runtime or the hosting module rather than configuration. Read the real
   message from `logs\stdout*.log` in the site folder, or from
   **Windows Event Viewer → Windows Logs → Application** (source
   `ASP.NET Core Hosting Diagnostic` / `IIS Express`, event `ASP.NET Core
   Hosting Diagnostics`).
-  - `Jwt signing key is missing or too short` → set `Jwt__Key`
-  - `Cannot reach the database` → the app did start; fix the connection string
   - `Failed to load ASP.NET Core Module` / `0x8007000d` → the Hosting Bundle
     is not installed
+  - `You must install .NET` / `Microsoft.AspNetCore.App 8.0.0 was not found` →
+    install the .NET 8 Hosting Bundle. `RollForward` covers a newer runtime,
+    not a missing one on a clean machine
+  - `Jwt signing key is missing or too short` → only on an old build; pull the
+    current code, or set `Jwt__Key`
+  - `Cannot reach the database` → the app did start; fix the connection string
+  - `jwt.key could not be created` → grant the application pool identity write
+    access to the site folder, or set `Jwt__Key`
   - HTTP 500.19 → `web.config` is malformed or the module is not registered
 - **404 on `/api/health`** — the reverse proxy is not forwarding `/api`, or the
   backend is not running. Check the `location /api/` block above.

@@ -24,6 +24,10 @@
 *.user
 .vs/
 
+# A JWT signing key generated at runtime when Jwt__Key is not supplied.
+# Persisted next to the published app so restarts keep existing sessions valid.
+**/jwt.key
+
 # ---- Node / Next.js frontend ----
 **/node_modules/
 **/.next/
