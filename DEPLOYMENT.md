@@ -56,19 +56,41 @@ Use environment variables on the host instead.
 
 ## 3. Database
 
-Run the three scripts in order against your SQL Server (MonsterASP or local):
+Run the schema and seed against the **same database the API uses** — the
+`Database=` value in `ConnectionStrings__Default`. On MonsterASP that name is
+host-assigned (e.g. `db71328`), **not** `RealEstateCRM`.
+
+`02_Schema.sql` and `03_SeedData.sql` each contain a `USE RealEstateCRM;` line.
+Leave it in on a MonsterASP database and the tables and seeded users land in the
+wrong database: `/api/health` reports `database: connected`, but login fails with
+**401 Invalid username or password** because the connected database has an empty
+`Users` table.
+
+**A. Host-assigned database (MonsterASP) — use the combined script.**
+`database/MonsterASP_Setup.sql` has no `USE RealEstateCRM;` and contains both the
+schema and the seed. Connect to your database and run the whole file. The schema
+section drops and recreates the tables first, so it is safe to re-run.
 
 ```powershell
-sqlcmd -S sql###.monsterasp.net -d yourdb -U youruser -P yourpassword -C -b -I -f -i database\01_CreateDatabase.sql
-sqlcmd -S sql###.monsterasp.net -d yourdb -U youruser -P yourpassword -C -b -I -f -i database\02_Schema.sql
-sqlcmd -S sql###.monsterasp.net -d yourdb -U youruser -P yourpassword -C -b -I -f -i database\03_SeedData.sql
+sqlcmd -S sql###.monsterasp.net -d db71328 -U db71328 -P yourpassword -C -b -I -f -i database\MonsterASP_Setup.sql
+```
+
+(Or upload it through the MonsterASP control panel's SQL script runner.)
+
+**B. Local SQL Server — use the numbered scripts.**
+
+```powershell
+sqlcmd -S localhost -d master       -E -C -b -I -f -i database\01_CreateDatabase.sql
+sqlcmd -S localhost -d RealEstateCRM -E -C -b -I -f -i database\02_Schema.sql
+sqlcmd -S localhost -d RealEstateCRM -E -C -b -I -f -i database\03_SeedData.sql
 ```
 
 `-I` is required — the `LeadCode` computed column needs `QUOTED_IDENTIFIER ON`.
 `-f` continues past per-batch errors so you see all of them at once.
 
-Seeded users start with the password **`Admin@123`**; the API replaces the
-sentinel hash on first startup. **Change every password before real use.**
+Seeded users start with the password **`Admin@123`**. The API swaps the sentinel
+hash for a real BCrypt hash on **startup**, so restart the API after seeding.
+**Change every password before real use.**
 
 ---
 
