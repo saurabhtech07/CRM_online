@@ -111,7 +111,15 @@ builder.Services.AddEndpointsApiExplorer();
 // Cors__Origins__0, Cors__Origins__1, ... Falling back to localhost keeps
 // `dotnet run` working with no configuration at all.
 const string CorsPolicy = "CrmFrontend";
-var corsOrigins = builder.Configuration.GetSection("Cors:Origins").Get<string[]>() ?? [];
+var corsOrigins = (builder.Configuration.GetSection("Cors:Origins").Get<string[]>() ?? [])
+    // A blank entry (e.g. Cors__Origins__0 left empty) matches nothing useful,
+    // so drop it rather than passing "" to WithOrigins.
+    .Where(o => !string.IsNullOrWhiteSpace(o))
+    // Browsers send the origin without a trailing slash, so "https://x.com/"
+    // would never match and CORS would fail for a reason that is invisible.
+    .Select(o => o.Trim().TrimEnd('/'))
+    .Distinct(StringComparer.OrdinalIgnoreCase)
+    .ToArray();
 if (corsOrigins.Length == 0)
     corsOrigins = ["http://localhost:3100", "http://127.0.0.1:3100", "http://localhost:3000"];
 
