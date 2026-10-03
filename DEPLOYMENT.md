@@ -124,11 +124,18 @@ This is the path that produces **`HTTP Error 500.30`**.
    `net8.0` app refuses to start on a machine with no 8.0 runtime, which also
    surfaces as `500.30`.
 2. `dotnet publish backend\CrmApi -c Release -o <site-folder>`
-3. The publish output already contains `web.config` — it is the IIS entry
-   point. Open it and fill in the two empty values **on the server**:
-   - `Jwt__Key`
-   - `ConnectionStrings__Default`
-   - `Cors__Origins__0`
+3. Set the real configuration on the host. Never commit it — this repository is
+   public. In the MonsterASP control panel (or as OS/IIS environment variables)
+   set:
+   - `Jwt__Key`                   — at least 32 characters
+   - `ConnectionStrings__Default` — full SQL Server connection string
+   - `Cors__Origins__0`           — exact frontend origin, no trailing slash
+
+   `web.config` ships **without** these variables on purpose. An environment
+   variable declared with an empty `value=""` outranks `appsettings.*.json` and
+   silently blanks the real value. That single mistake makes the API report
+   `database: "unreachable"`, generate a throwaway JWT key, and drop the
+   frontend origin from CORS — all at the same time.
 4. Create an empty `logs` folder in the site folder and grant the
    **ApplicationPool identity** write access to it. `web.config` enables
    stdout logging, and IIS silently drops the log if it cannot write.
