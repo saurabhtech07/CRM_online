@@ -18,7 +18,11 @@ builder.Services.AddDbContext<CrmDbContext>(opt =>
 /* ---------- JWT ---------- */
 var jwt = builder.Configuration.GetSection("Jwt").Get<JwtSettings>() ?? new JwtSettings();
 if (string.IsNullOrWhiteSpace(jwt.Key) || jwt.Key.Length < 32)
-    throw new InvalidOperationException("Jwt:Key must be configured and at least 32 characters long.");
+    throw new InvalidOperationException(
+        "Jwt signing key is missing or too short (need >= 32 characters). " +
+        "Set it on the host as an environment variable:  Jwt__Key=\"<32+ random chars>\" " +
+        "Do NOT commit it to appsettings*.json - this repository is public. " +
+        "Generate one with:  openssl rand -base64 48");
 
 builder.Services.AddSingleton(jwt);
 builder.Services.AddScoped<ITokenService, TokenService>();
@@ -65,11 +69,17 @@ builder.Services.Configure<ApiBehaviorOptions>(o =>
 
 builder.Services.AddEndpointsApiExplorer();
 
-/* ---------- CORS for the Next.js dev server ---------- */
+/* ---------- CORS ---------- */
+// Origins come from Cors:Origins, which on a deploy host is set through
+// Cors__Origins__0, Cors__Origins__1, ... Falling back to localhost keeps
+// `dotnet run` working with no configuration at all.
 const string CorsPolicy = "CrmFrontend";
+var corsOrigins = builder.Configuration.GetSection("Cors:Origins").Get<string[]>() ?? [];
+if (corsOrigins.Length == 0)
+    corsOrigins = ["http://localhost:3100", "http://127.0.0.1:3100", "http://localhost:3000"];
+
 builder.Services.AddCors(o => o.AddPolicy(CorsPolicy, p => p
-    .WithOrigins(builder.Configuration.GetSection("Cors:Origins").Get<string[]>()
-                 ?? ["http://localhost:3000"])
+    .WithOrigins(corsOrigins)
     .AllowAnyHeader()
     .AllowAnyMethod()));
 
@@ -101,11 +111,41 @@ app.UseExceptionHandler(errApp => errApp.Run(async ctx =>
     });
 }));
 
+// TLS handling is opt-in via Http:ForceHttps. It defaults to OFF on purpose:
+// when a reverse proxy terminates TLS and forwards plain HTTP to this process,
+// a forced redirect bounces the request back out to the proxy and can loop.
+// Only turn it on when this app terminates TLS itself.
+var forceHttps = builder.Configuration.GetValue("Http:ForceHttps", false);
+if (!app.Environment.IsDevelopment() && forceHttps)
+{
+    app.UseHsts();
+    app.UseHttpsRedirection();
+}
+
+// Loud warning for the two mistakes that make a deploy look "broken" while the
+// process is actually healthy.
+if (!app.Environment.IsDevelopment())
+{
+    if (corsOrigins.Any(o => o.Contains("localhost", StringComparison.OrdinalIgnoreCase)
+                          || o.Contains("127.0.0.1", StringComparison.OrdinalIgnoreCase)))
+        app.Logger.LogWarning(
+            "CORS is still limited to localhost origins {Origins}. A deployed frontend on a real " +
+            "domain will be blocked. Set Cors__Origins__0=https://your-frontend-domain.com on the host.",
+            corsOrigins);
+
+    if (string.IsNullOrWhiteSpace(builder.Configuration.GetConnectionString("Default")))
+        app.Logger.LogError(
+            "ConnectionStrings:Default is empty. Set ConnectionStrings__Default on the host, " +
+            "otherwise every query will fail.");
+}
+
 app.UseCors(CorsPolicy);
 app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();
 
+// Unauthenticated by design so a load balancer / deploy check can verify the
+// process is up. Reports config health only - never echoes any secret value.
 app.MapGet("/api/health", async (CrmDbContext db) =>
 {
     var canConnect = await db.Database.CanConnectAsync();
@@ -113,6 +153,10 @@ app.MapGet("/api/health", async (CrmDbContext db) =>
     {
         status = canConnect ? "healthy" : "degraded",
         database = canConnect ? "connected" : "unreachable",
+        // Booting at all proves the JWT key is present and >= 32 chars.
+        jwtKeyConfigured = !string.IsNullOrWhiteSpace(jwt.Key) && jwt.Key.Length >= 32,
+        corsOrigins,
+        environment = app.Environment.EnvironmentName,
         timeUtc = DateTime.UtcNow
     });
 });

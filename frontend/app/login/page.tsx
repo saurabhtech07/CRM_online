@@ -15,7 +15,7 @@ export default function LoginPage() {
 
   // Sensible defaults so the first sign-in is one click.
   const [username, setUsername] = useState("admin");
-  const [password, setPassword] = useState("123");
+  const [password, setPassword] = useState("Admin@123");
   const [showPassword, setShowPassword] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);

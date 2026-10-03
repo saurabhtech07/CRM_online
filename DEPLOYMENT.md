@@ -1,0 +1,142 @@
+# Deployment guide
+
+Both apps must be running. This file covers what to set where, and fixes the
+three things that most often make a correct deploy look broken.
+
+---
+
+## 1. Required environment variables
+
+The backend reads these automatically from the host. They **override**
+`appsettings*.json`. See `backend/CrmApi/.env.example`.
+
+| Variable | Required | Example |
+|---|---|---|
+| `Jwt__Key` | **Yes** | 48+ random chars |
+| `ConnectionStrings__Default` | **Yes** | `Server=sql###.monsterasp.net;Database=...;User Id=...;Password=...;TrustServerCertificate=True;` |
+| `Cors__Origins__0` | **Yes** | `https://crm.yourdomain.com` |
+
+Generate a signing key:
+
+```bash
+openssl rand -base64 48
+```
+
+The app **refuses to start** if `Jwt__Key` is missing or under 32 characters.
+This is deliberate — it fails loudly rather than booting with a guessable key.
+
+The frontend needs one value, and it is baked in at **build** time:
+
+| Variable | Example |
+|---|---|
+| `NEXT_PUBLIC_API_BASE` | `https://crm.yourdomain.com/api` |
+
+Rebuild the frontend after changing it. A restart is not enough.
+
+---
+
+## 2. Never put real secrets in appsettings\*.json
+
+This repository is **public**. All three appsettings files are committed, but only
+as templates with empty secrets. If you edit them to add a real password it
+will be published to GitHub, stay in the history after you delete it, and the
+database holds real customer leads.
+
+Use environment variables on the host instead.
+
+---
+
+## 3. Database
+
+Run the three scripts in order against your SQL Server (MonsterASP or local):
+
+```powershell
+sqlcmd -S sql###.monsterasp.net -d yourdb -U youruser -P yourpassword -C -b -I -f -i database\01_CreateDatabase.sql
+sqlcmd -S sql###.monsterasp.net -d yourdb -U youruser -P yourpassword -C -b -I -f -i database\02_Schema.sql
+sqlcmd -S sql###.monsterasp.net -d yourdb -U youruser -P yourpassword -C -b -I -f -i database\03_SeedData.sql
+```
+
+`-I` is required — the `LeadCode` computed column needs `QUOTED_IDENTIFIER ON`.
+`-f` continues past per-batch errors so you see all of them at once.
+
+Seeded users start with the password **`Admin@123`**; the API replaces the
+sentinel hash on first startup. **Change every password before real use.**
+
+---
+
+## 4. Serving both apps on one domain
+
+Frontend on port 3000/3100, backend on 5072, nginx in front of both.
+
+```nginx
+server {
+    listen 80;
+    server_name crm.yourdomain.com;
+
+    # ---- Frontend (Next.js) ----
+    location / {
+        proxy_pass         http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header   Upgrade    $http_upgrade;
+        proxy_set_header   Connection 'upgrade';
+        proxy_set_header   Host       $host;
+        proxy_set_header   X-Real-IP  $remote_addr;
+        proxy_cache_bypass $http_upgrade;
+    }
+
+    # ---- Backend (ASP.NET Core) ----
+    # The API's own routes already start with /api, so the path is passed
+    # through unchanged. proxy_pass must NOT end in a trailing slash here.
+    location /api/ {
+        proxy_pass         http://127.0.0.1:5072;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Real-IP         $remote_addr;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+    }
+}
+```
+
+Then set on the host:
+
+```
+NEXT_PUBLIC_API_BASE=https://crm.yourdomain.com/api
+Cors__Origins__0=https://crm.yourdomain.com
+```
+
+On Windows / IIS, install the [ASP.NET Core Module](https://learn.microsoft.com/aspnet/core/host-and-deploy/aspnet-core-module?view=aspnetcore-8.0),
+then add URL Rewrite + a reverse proxy to `127.0.0.1:5072` for paths starting
+with `api`, and the IIS site binding serves the built Next.js output.
+
+---
+
+## 5. Fixing a 404
+
+Work top to bottom — each step rules out a whole layer.
+
+| Check | Command | Healthy result |
+|---|---|---|
+| Backend process alive | `curl -i https://crm.yourdomain.com/api/health` | `200` + `jwtKeyConfigured: true` |
+| Login route exists | `curl -i -X POST https://crm.yourdomain.com/api/auth/login -H "Content-Type: application/json" -d '{"username":"admin","password":"Admin@123"}'` | `200` with a token |
+| Frontend served | open `https://crm.yourdomain.com/login` | login form renders |
+
+Read the result:
+
+- **404 on `/api/health`** — the reverse proxy is not forwarding `/api`, or the
+  backend is not running. Check the `location /api/` block above.
+- **`jwtKeyConfigured: false`** — impossible while the process is up; the app
+  would have refused to boot. If you see it, a stale build is running.
+- **`database: unreachable`** — `ConnectionStrings__Default` is wrong, or the
+  MonsterASP firewall is blocking your host's IP.
+- **404 on `/login`** — the frontend is being served as static files. Next.js
+  needs `npm run build && npm start`; uploading `.next` to a static host gives
+  a 404 on every route because there is no `index.html`.
+- **Frontend loads, every call fails with "NEXT_PUBLIC_API_BASE is not set"** —
+  it was missing at **build** time. Set it and rebuild.
+- **"CORS" error in the browser console** — `Cors__Origins__0` does not match
+  the frontend origin exactly, including scheme and port.
+
+`GET /api/health` is intentionally unauthenticated so a load balancer or deploy
+check can verify the process. It reports config status only and never echoes a
+secret.

@@ -3,9 +3,15 @@
 # ============================================================
 
 # ---- SECRETS (never commit) ----
-**/appsettings.Production.json
-**/appsettings.Development.json
+# appsettings.*.json ARE committed, but only as templates with EMPTY secrets.
+# Real values are supplied at runtime via environment variables:
+#   Jwt__Key                  (32+ chars, required  -> app refuses to boot without it)
+#   ConnectionStrings__Default
+#   Cors__Origins__0
+#   Jwt__Issuer / Jwt__Audience / Jwt__ExpiryMinutes
+# A deploy host overwrites these at runtime; never type real secrets below.
 **/appsettings.*.Local.json
+**/appsettings.Local.json
 *.env
 .env
 .env.*

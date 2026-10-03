@@ -10,7 +10,7 @@ namespace CrmApi.Data;
 /// </summary>
 public static class PasswordSeeder
 {
-    public const string DefaultPassword = "123";
+    public const string DefaultPassword = "Admin@123";
 
     /// <summary>Marker written by 03_SeedData.sql - never a valid BCrypt hash.</summary>
     public const string Sentinel = "SEED_DEFAULT_PASSWORD";

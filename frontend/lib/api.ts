@@ -1,4 +1,21 @@
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:5072/api";
+/**
+ * Base URL of the ASP.NET API.
+ *
+ * NEXT_PUBLIC_* values are inlined at BUILD time, so this must be provided as
+ * an environment variable when the frontend is built for deployment. Falling
+ * back to localhost in a production bundle is never right: every visitor's
+ * browser would try to reach THEIR OWN machine on port 5072 and the app would
+ * look broken. Fail loudly instead.
+ */
+const CONFIGURED_API_BASE = process.env.NEXT_PUBLIC_API_BASE;
+const API_BASE = (CONFIGURED_API_BASE ?? "http://localhost:5072/api").replace(/\/+$/, "");
+
+function missingBaseUrlMessage(): string | null {
+  if (CONFIGURED_API_BASE) return null;
+  if (process.env.NODE_ENV === "production")
+    return "NEXT_PUBLIC_API_BASE is not set. Rebuild the frontend with NEXT_PUBLIC_API_BASE=https://your-backend-domain/api";
+  return null;
+}
 
 const TOKEN_KEY = "crm.token";
 const USER_KEY = "crm.user";
@@ -42,9 +59,11 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   let res: Response;
   try {
     res = await fetch(`${API_BASE}${path}`, { ...init, headers });
-  } catch {
+  } catch (cause) {
+    const configError = missingBaseUrlMessage();
     throw new ApiError(
-      "Cannot reach the server. Make sure the API is running on port 5072.",
+      configError ??
+        `Cannot reach the API at ${API_BASE}. Check that the backend is running and that NEXT_PUBLIC_API_BASE is correct.`,
       0,
     );
   }
@@ -88,7 +107,11 @@ export async function downloadFile(path: string, fallbackName: string): Promise<
   try {
     res = await fetch(`${API_BASE}${path}`, { headers });
   } catch {
-    throw new ApiError("Cannot reach the server. Make sure the API is running.", 0);
+    const configError = missingBaseUrlMessage();
+    throw new ApiError(
+      configError ?? `Cannot reach the API at ${API_BASE}. Check that the backend is running.`,
+      0,
+    );
   }
 
   if (res.status === 401) {
